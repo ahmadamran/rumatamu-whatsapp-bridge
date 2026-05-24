@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
-import { WhatsappSessionManager } from './session-manager.js';
+import { mediaContentFromPayload, WhatsappSessionManager } from './session-manager.js';
 
 function makeManager() {
   const events = [];
@@ -110,4 +110,29 @@ test('message events include phone jid when whatsapp sends a lid remote jid', as
   assert.equal(events[0].payload.remoteJid, '72082536796288@lid');
   assert.equal(events[0].payload.phoneJid, '60136102545@s.whatsapp.net');
   assert.equal(events[0].payload.phone, '60136102545');
+});
+
+test('media payloads are converted into baileys image content', () => {
+  const content = mediaContentFromPayload({
+    type: 'image',
+    mimeType: 'image/png',
+    caption: 'Receipt',
+    base64: Buffer.from('fake-image').toString('base64'),
+  });
+
+  assert.equal(Buffer.isBuffer(content.image), true);
+  assert.equal(content.mimetype, 'image/png');
+  assert.equal(content.caption, 'Receipt');
+});
+
+test('media payloads are converted into baileys voice content', () => {
+  const content = mediaContentFromPayload({
+    type: 'voice',
+    mimeType: 'audio/ogg',
+    base64: Buffer.from('fake-audio').toString('base64'),
+  });
+
+  assert.equal(Buffer.isBuffer(content.audio), true);
+  assert.equal(content.mimetype, 'audio/ogg');
+  assert.equal(content.ptt, true);
 });

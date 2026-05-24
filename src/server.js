@@ -42,7 +42,7 @@ export function createApp({ manager } = {}) {
   const app = express();
   const sessionManager = manager || new WhatsappSessionManager({ authRoot, emit, logger });
 
-  app.use(express.json({ limit: '2mb' }));
+  app.use(express.json({ limit: process.env.JSON_LIMIT || '25mb' }));
 
   app.get('/health', (request, response) => {
     response.json({ ok: true, sessions: sessionManager.sessions?.size || 0 });
@@ -89,10 +89,10 @@ export function createApp({ manager } = {}) {
 
   app.post('/sessions/:managementCompanyId/messages/send', async (request, response, next) => {
     try {
-      const { to, body } = request.body || {};
-      response.json(await sessionManager.sendMessage(request.managementCompanyId, to, body));
+      const { to, body, media } = request.body || {};
+      response.json(await sessionManager.sendMessage(request.managementCompanyId, to, body, media));
     } catch (error) {
-      if (error.message === '`to` and `body` are required.') {
+      if (error.message === '`to` and `body` or `media` are required.') {
         response.status(422).json({ message: error.message });
         return;
       }

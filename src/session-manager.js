@@ -2,6 +2,7 @@ import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import makeWASocket, {
   DisconnectReason,
+  downloadMediaMessage,
   fetchLatestBaileysVersion,
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
@@ -16,6 +17,45 @@ export function bodyFromMessage(message) {
     message?.videoMessage?.caption ||
     ''
   );
+}
+
+export function typeFromMessage(message) {
+  const key = Object.keys(message || {})[0] || 'text';
+
+  if (key === 'imageMessage') {
+    return 'image';
+  }
+
+  if (key === 'audioMessage') {
+    return 'audio';
+  }
+
+  return key.replace(/Message$/, '') || 'text';
+}
+
+export function mediaInfoFromMessage(message) {
+  const image = message?.imageMessage;
+  const audio = message?.audioMessage;
+
+  if (image) {
+    return {
+      type: 'image',
+      mimeType: image.mimetype || 'image/jpeg',
+      fileName: image.fileName || null,
+      caption: image.caption || '',
+    };
+  }
+
+  if (audio) {
+    return {
+      type: audio.ptt ? 'voice' : 'audio',
+      mimeType: audio.mimetype || 'audio/ogg',
+      fileName: audio.fileName || null,
+      voice: Boolean(audio.ptt),
+    };
+  }
+
+  return null;
 }
 
 export function normalizeManagementCompanyId(value) {
@@ -50,6 +90,35 @@ export function phoneJidFromMessage(item) {
 
 export function phoneFromJid(value) {
   return String(value || '').replace(/@.+$/, '').replace(/\D+/g, '');
+}
+
+export function mediaContentFromPayload(media = {}) {
+  const payload = media || {};
+  const type = String(payload.type || '').toLowerCase();
+  const mimeType = String(payload.mimeType || payload.mimetype || '').toLowerCase();
+  const buffer = payload.base64 ? Buffer.from(String(payload.base64), 'base64') : null;
+
+  if (!buffer || !buffer.length) {
+    return null;
+  }
+
+  if (type === 'image' || mimeType.startsWith('image/')) {
+    return {
+      image: buffer,
+      caption: payload.caption || payload.body || undefined,
+      mimetype: mimeType || undefined,
+    };
+  }
+
+  if (['audio', 'voice'].includes(type) || mimeType.startsWith('audio/')) {
+    return {
+      audio: buffer,
+      mimetype: mimeType || 'audio/ogg',
+      ptt: type === 'voice' || Boolean(payload.voice),
+    };
+  }
+
+  return null;
 }
 
 export class WhatsappSessionManager {
@@ -193,11 +262,41 @@ export class WhatsappSessionManager {
     }
   }
 
+  async mediaPayloadForMessage(item) {
+    const info = mediaInfoFromMessage(item.message);
+
+    if (!info) {
+      return null;
+    }
+
+    try {
+      const buffer = await downloadMediaMessage(item, 'buffer', {}, {
+        logger: this.logger?.child ? this.logger.child({ module: 'baileys-media' }) : this.logger,
+      });
+
+      return {
+        ...info,
+        base64: buffer.toString('base64'),
+        size: buffer.length,
+      };
+    } catch (error) {
+      this.logger?.warn?.({ error, messageId: item.key?.id }, 'Unable to download WhatsApp media');
+
+      return {
+        ...info,
+        downloadError: error?.message || 'Unable to download WhatsApp media.',
+      };
+    }
+  }
+
   async handleMessages(session, { messages }) {
     for (const item of messages || []) {
       if (!item.message || item.key.fromMe) {
         continue;
       }
+
+      const type = typeFromMessage(item.message);
+      const media = await this.mediaPayloadForMessage(item);
 
       await this.emit('message', session.managementCompanyId, {
         messageId: item.key.id,
@@ -206,8 +305,9 @@ export class WhatsappSessionManager {
         phone: phoneFromJid(phoneJidFromMessage(item)),
         pushName: item.pushName,
         timestamp: Number(item.messageTimestamp || Math.floor(Date.now() / 1000)),
-        type: Object.keys(item.message)[0] || 'text',
+        type,
         body: bodyFromMessage(item.message),
+        media,
         payload: item,
       });
     }
@@ -254,9 +354,9 @@ export class WhatsappSessionManager {
     return this.status(session.managementCompanyId);
   }
 
-  async sendMessage(managementCompanyId, to, body) {
-    if (!to || !body) {
-      throw new Error('`to` and `body` are required.');
+  async sendMessage(managementCompanyId, to, body, media = null) {
+    if (!to || (!body && !media)) {
+      throw new Error('`to` and `body` or `media` are required.');
     }
 
     await this.start(managementCompanyId);
@@ -266,13 +366,18 @@ export class WhatsappSessionManager {
     }
 
     const jid = toWhatsappJid(to);
-    const result = await session.socket.sendMessage(jid, { text: String(body) });
+    const mediaContent = mediaContentFromPayload(media);
+    const result = await session.socket.sendMessage(
+      jid,
+      mediaContent || { text: String(body) },
+    );
 
     return {
       ok: true,
       managementCompanyId: session.managementCompanyId,
       messageId: result?.key?.id || null,
       to: jid,
+      mediaType: mediaContent ? String(media?.type || 'media') : null,
     };
   }
 }
