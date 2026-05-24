@@ -38,6 +38,20 @@ export function toWhatsappJid(value) {
   return to.includes('@') ? to : `${to.replace(/\D+/g, '')}@s.whatsapp.net`;
 }
 
+export function phoneJidFromMessage(item) {
+  return (
+    item?.key?.senderPn ||
+    item?.key?.participantPn ||
+    item?.senderPn ||
+    item?.participantPn ||
+    ''
+  );
+}
+
+export function phoneFromJid(value) {
+  return String(value || '').replace(/@.+$/, '').replace(/\D+/g, '');
+}
+
 export class WhatsappSessionManager {
   constructor({
     authRoot = '/data/auth',
@@ -188,6 +202,8 @@ export class WhatsappSessionManager {
       await this.emit('message', session.managementCompanyId, {
         messageId: item.key.id,
         remoteJid: item.key.remoteJid,
+        phoneJid: phoneJidFromMessage(item),
+        phone: phoneFromJid(phoneJidFromMessage(item)),
         pushName: item.pushName,
         timestamp: Number(item.messageTimestamp || Math.floor(Date.now() / 1000)),
         type: Object.keys(item.message)[0] || 'text',

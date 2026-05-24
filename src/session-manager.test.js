@@ -84,3 +84,30 @@ test('qr events include the correct management company id', async () => {
   assert.equal(events[0].managementCompanyId, 7);
   assert.equal(events[0].payload.qrDataUrl, 'data:image/png;base64,scan-me');
 });
+
+test('message events include phone jid when whatsapp sends a lid remote jid', async () => {
+  const { manager, events } = makeManager();
+
+  await manager.start(1);
+  await manager.sessionFor(1).socket.ev.emit('messages.upsert', {
+    messages: [
+      {
+        key: {
+          id: 'message-1',
+          remoteJid: '72082536796288@lid',
+          senderPn: '60136102545@s.whatsapp.net',
+          fromMe: false,
+        },
+        pushName: 'Amran',
+        messageTimestamp: 1779634752,
+        message: { conversation: 'Hello' },
+      },
+    ],
+  });
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].event, 'message');
+  assert.equal(events[0].payload.remoteJid, '72082536796288@lid');
+  assert.equal(events[0].payload.phoneJid, '60136102545@s.whatsapp.net');
+  assert.equal(events[0].payload.phone, '60136102545');
+});
