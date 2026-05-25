@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
-import { disconnectStatusCode, mediaContentFromPayload, mediaInfoFromMessage, WhatsappSessionManager } from './session-manager.js';
+import { disconnectStatusCode, mediaContentFromPayload, mediaInfoFromMessage, quotedMessageFromPayload, WhatsappSessionManager } from './session-manager.js';
 
 function makeManager() {
   const events = [];
@@ -132,6 +132,38 @@ test('uses explicit ephemeral expiration from send request before cached chat st
 
   assert.equal(response.ephemeralExpiration, 604800);
   assert.deepEqual(socket.sent[0].options, { ephemeralExpiration: 604800 });
+});
+
+test('sends with quoted message options for native WhatsApp replies', async () => {
+  const { manager } = makeManager();
+
+  await manager.start(2);
+  const socket = manager.sessionFor(2).socket;
+  const quoted = {
+    key: {
+      id: 'IN-QUOTE-1',
+      remoteJid: '60123456789@s.whatsapp.net',
+      fromMe: false,
+    },
+    message: {
+      conversation: 'Original question',
+    },
+  };
+
+  const response = await manager.sendMessage(2, '60123456789', 'Native quote reply', null, null, quoted);
+
+  assert.equal(response.quotedMessageId, 'IN-QUOTE-1');
+  assert.deepEqual(socket.sent[0], {
+    to: '60123456789@s.whatsapp.net',
+    message: { text: 'Native quote reply' },
+    options: { quoted },
+  });
+});
+
+test('ignores invalid quoted message payloads', () => {
+  assert.equal(quotedMessageFromPayload(null), null);
+  assert.equal(quotedMessageFromPayload({ key: { id: 'missing-message' } }), null);
+  assert.equal(quotedMessageFromPayload({ message: { conversation: 'missing id' } }), null);
 });
 
 test('does not send stale ephemeral expiration after the chat disables disappearing messages', async () => {

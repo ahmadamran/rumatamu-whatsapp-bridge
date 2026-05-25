@@ -145,6 +145,29 @@ export function normalizeEphemeralExpiration(value) {
   return Number.isSafeInteger(expiration) && expiration > 0 ? expiration : null;
 }
 
+export function quotedMessageFromPayload(value) {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const key = value.key && typeof value.key === 'object' ? value.key : {};
+  const message = value.message && typeof value.message === 'object' ? value.message : null;
+  const id = String(key.id || '').trim();
+
+  if (!id || !message) {
+    return null;
+  }
+
+  return {
+    key: {
+      ...key,
+      id,
+      fromMe: Boolean(key.fromMe),
+    },
+    message,
+  };
+}
+
 export function contextInfoFromMessage(message) {
   const content =
     message?.ephemeralMessage?.message ||
@@ -480,7 +503,7 @@ export class WhatsappSessionManager {
     return this.status(session.managementCompanyId);
   }
 
-  async sendMessage(managementCompanyId, to, body, media = null, ephemeralExpirationOverride = null) {
+  async sendMessage(managementCompanyId, to, body, media = null, ephemeralExpirationOverride = null, quoted = null) {
     if (!to || (!body && !media)) {
       throw new Error('`to` and `body` or `media` are required.');
     }
@@ -495,7 +518,12 @@ export class WhatsappSessionManager {
     const mediaContent = mediaContentFromPayload(media);
     const ephemeralExpiration = normalizeEphemeralExpiration(ephemeralExpirationOverride) || session.ephemeralExpirations.get(jid);
     this.cacheEphemeralExpiration(session, [jid], ephemeralExpiration);
-    const options = ephemeralExpiration ? { ephemeralExpiration } : undefined;
+    const quotedMessage = quotedMessageFromPayload(quoted);
+    const optionsPayload = {
+      ...(ephemeralExpiration ? { ephemeralExpiration } : {}),
+      ...(quotedMessage ? { quoted: quotedMessage } : {}),
+    };
+    const options = Object.keys(optionsPayload).length ? optionsPayload : undefined;
     const result = await session.socket.sendMessage(jid, mediaContent || { text: String(body) }, options);
 
     return {
@@ -505,6 +533,7 @@ export class WhatsappSessionManager {
       to: jid,
       mediaType: mediaContent ? String(media?.type || 'media') : null,
       ephemeralExpiration: ephemeralExpiration || null,
+      quotedMessageId: quotedMessage?.key?.id || null,
     };
   }
 }
