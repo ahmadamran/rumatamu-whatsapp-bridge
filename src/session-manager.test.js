@@ -140,6 +140,71 @@ test('does not send stale ephemeral expiration after the chat disables disappear
   assert.equal(socket.sent[0].options, undefined);
 });
 
+test('learns disappearing message timer from inbound message context info for lid chats', async () => {
+  const { manager } = makeManager();
+
+  await manager.start(2);
+  const socket = manager.sessionFor(2).socket;
+  await socket.ev.emit('messages.upsert', {
+    messages: [
+      {
+        key: {
+          id: 'message-ephemeral-1',
+          remoteJid: '72082536796288@lid',
+          senderPn: '60136102545@s.whatsapp.net',
+          fromMe: false,
+        },
+        messageTimestamp: 1779634752,
+        message: {
+          extendedTextMessage: {
+            text: 'Takde email pun',
+            contextInfo: { expiration: 86400 },
+          },
+        },
+      },
+    ],
+  });
+
+  const response = await manager.sendMessage(2, '72082536796288@lid', 'Reply');
+
+  assert.equal(response.ephemeralExpiration, 86400);
+  assert.deepEqual(socket.sent[0].options, { ephemeralExpiration: 86400 });
+});
+
+test('caches inbound disappearing message timer for the phone jid alias', async () => {
+  const { manager } = makeManager();
+
+  await manager.start(2);
+  const socket = manager.sessionFor(2).socket;
+  await socket.ev.emit('messages.upsert', {
+    messages: [
+      {
+        key: {
+          id: 'message-ephemeral-2',
+          remoteJid: '72082536796288@lid',
+          senderPn: '60136102545@s.whatsapp.net',
+          fromMe: false,
+        },
+        messageTimestamp: 1779634752,
+        message: {
+          extendedTextMessage: {
+            text: 'Ada kosong esok?',
+            contextInfo: { expiration: 86400 },
+          },
+        },
+      },
+    ],
+  });
+
+  await manager.sendMessage(2, '60136102545', 'Phone alias reply');
+
+  assert.deepEqual(socket.sent[0], {
+    to: '60136102545@s.whatsapp.net',
+    message: { text: 'Phone alias reply' },
+    options: { ephemeralExpiration: 86400 },
+  });
+});
+
 test('qr events include the correct management company id', async () => {
   const { manager, events } = makeManager();
 

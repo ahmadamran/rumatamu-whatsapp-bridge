@@ -135,6 +135,34 @@ export function normalizeEphemeralExpiration(value) {
   return Number.isSafeInteger(expiration) && expiration > 0 ? expiration : null;
 }
 
+export function contextInfoFromMessage(message) {
+  const content =
+    message?.ephemeralMessage?.message ||
+    message?.viewOnceMessage?.message ||
+    message?.viewOnceMessageV2?.message ||
+    message?.viewOnceMessageV2Extension?.message ||
+    message;
+
+  return (
+    content?.extendedTextMessage?.contextInfo ||
+    content?.imageMessage?.contextInfo ||
+    content?.videoMessage?.contextInfo ||
+    content?.documentMessage?.contextInfo ||
+    content?.audioMessage?.contextInfo ||
+    null
+  );
+}
+
+export function ephemeralExpirationFromMessage(message) {
+  const contextInfo = contextInfoFromMessage(message);
+
+  if (!contextInfo || !Object.prototype.hasOwnProperty.call(contextInfo, 'expiration')) {
+    return undefined;
+  }
+
+  return normalizeEphemeralExpiration(contextInfo.expiration);
+}
+
 export class WhatsappSessionManager {
   constructor({
     authRoot = '/data/auth',
@@ -247,13 +275,36 @@ export class WhatsappSessionManager {
         continue;
       }
 
-      const expiration = normalizeEphemeralExpiration(chat.ephemeralExpiration);
+      this.cacheEphemeralExpiration(session, [jid], chat.ephemeralExpiration);
+    }
+  }
+
+  cacheEphemeralExpiration(session, jids, value) {
+    const expiration = normalizeEphemeralExpiration(value);
+
+    for (const jid of jids || []) {
+      if (!jid) {
+        continue;
+      }
 
       if (expiration) {
         session.ephemeralExpirations.set(jid, expiration);
       } else {
         session.ephemeralExpirations.delete(jid);
       }
+    }
+  }
+
+  syncEphemeralAliases(session, jids) {
+    const aliases = (jids || []).filter(Boolean);
+    const expiration = aliases.map((jid) => session.ephemeralExpirations.get(jid)).find(Boolean);
+
+    if (!expiration) {
+      return;
+    }
+
+    for (const jid of aliases) {
+      session.ephemeralExpirations.set(jid, expiration);
     }
   }
 
@@ -350,14 +401,24 @@ export class WhatsappSessionManager {
         continue;
       }
 
+      const remoteJid = item.key.remoteJid;
+      const phoneJid = phoneJidFromMessage(item);
+      const expiration = ephemeralExpirationFromMessage(item.message);
+
+      if (expiration !== undefined) {
+        this.cacheEphemeralExpiration(session, [remoteJid, phoneJid], expiration);
+      } else {
+        this.syncEphemeralAliases(session, [remoteJid, phoneJid]);
+      }
+
       const type = typeFromMessage(item.message);
       const media = await this.mediaPayloadForMessage(item);
 
       await this.emit('message', session.managementCompanyId, {
         messageId: item.key.id,
-        remoteJid: item.key.remoteJid,
-        phoneJid: phoneJidFromMessage(item),
-        phone: phoneFromJid(phoneJidFromMessage(item)),
+        remoteJid,
+        phoneJid,
+        phone: phoneFromJid(phoneJid),
         pushName: item.pushName,
         timestamp: Number(item.messageTimestamp || Math.floor(Date.now() / 1000)),
         type,
