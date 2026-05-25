@@ -36,6 +36,7 @@ export function typeFromMessage(message) {
 export function mediaInfoFromMessage(message) {
   const image = message?.imageMessage;
   const audio = message?.audioMessage;
+  const video = message?.videoMessage;
 
   if (image) {
     return {
@@ -52,6 +53,15 @@ export function mediaInfoFromMessage(message) {
       mimeType: audio.mimetype || 'audio/ogg',
       fileName: audio.fileName || null,
       voice: Boolean(audio.ptt),
+    };
+  }
+
+  if (video) {
+    return {
+      type: 'video',
+      mimeType: video.mimetype || 'video/mp4',
+      fileName: video.fileName || null,
+      caption: video.caption || '',
     };
   }
 

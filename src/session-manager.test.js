@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
-import { disconnectStatusCode, mediaContentFromPayload, WhatsappSessionManager } from './session-manager.js';
+import { disconnectStatusCode, mediaContentFromPayload, mediaInfoFromMessage, WhatsappSessionManager } from './session-manager.js';
 
 function makeManager() {
   const events = [];
@@ -300,6 +300,23 @@ test('media payloads are converted into baileys image content', () => {
   assert.equal(Buffer.isBuffer(content.image), true);
   assert.equal(content.mimetype, 'image/png');
   assert.equal(content.caption, 'Receipt');
+});
+
+test('video messages expose downloadable media metadata', () => {
+  const info = mediaInfoFromMessage({
+    videoMessage: {
+      mimetype: 'video/mp4',
+      fileName: 'guest-video.mp4',
+      caption: 'Arrival video',
+    },
+  });
+
+  assert.deepEqual(info, {
+    type: 'video',
+    mimeType: 'video/mp4',
+    fileName: 'guest-video.mp4',
+    caption: 'Arrival video',
+  });
 });
 
 test('media payloads are converted into baileys voice content', () => {
