@@ -89,8 +89,8 @@ export function createApp({ manager } = {}) {
 
   app.post('/sessions/:managementCompanyId/messages/send', async (request, response, next) => {
     try {
-      const { to, body, media } = request.body || {};
-      response.json(await sessionManager.sendMessage(request.managementCompanyId, to, body, media));
+      const { to, body, media, ephemeralExpiration } = request.body || {};
+      response.json(await sessionManager.sendMessage(request.managementCompanyId, to, body, media, ephemeralExpiration));
     } catch (error) {
       if (error.message === '`to` and `body` or `media` are required.') {
         response.status(422).json({ message: error.message });

@@ -470,7 +470,7 @@ export class WhatsappSessionManager {
     return this.status(session.managementCompanyId);
   }
 
-  async sendMessage(managementCompanyId, to, body, media = null) {
+  async sendMessage(managementCompanyId, to, body, media = null, ephemeralExpirationOverride = null) {
     if (!to || (!body && !media)) {
       throw new Error('`to` and `body` or `media` are required.');
     }
@@ -483,7 +483,8 @@ export class WhatsappSessionManager {
 
     const jid = toWhatsappJid(to);
     const mediaContent = mediaContentFromPayload(media);
-    const ephemeralExpiration = session.ephemeralExpirations.get(jid);
+    const ephemeralExpiration = normalizeEphemeralExpiration(ephemeralExpirationOverride) || session.ephemeralExpirations.get(jid);
+    this.cacheEphemeralExpiration(session, [jid], ephemeralExpiration);
     const options = ephemeralExpiration ? { ephemeralExpiration } : undefined;
     const result = await session.socket.sendMessage(jid, mediaContent || { text: String(body) }, options);
 

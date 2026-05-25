@@ -116,6 +116,24 @@ test('uses ephemeral expiration from messaging history before sending', async ()
   assert.deepEqual(socket.sent[0].options, { ephemeralExpiration: 604800 });
 });
 
+test('uses explicit ephemeral expiration from send request before cached chat state', async () => {
+  const { manager } = makeManager();
+
+  await manager.start(2);
+  const socket = manager.sessionFor(2).socket;
+  socket.ev.emit('chats.update', [
+    {
+      id: '60123456789@s.whatsapp.net',
+      ephemeralExpiration: 86400,
+    },
+  ]);
+
+  const response = await manager.sendMessage(2, '60123456789', 'Override timer', null, 604800);
+
+  assert.equal(response.ephemeralExpiration, 604800);
+  assert.deepEqual(socket.sent[0].options, { ephemeralExpiration: 604800 });
+});
+
 test('does not send stale ephemeral expiration after the chat disables disappearing messages', async () => {
   const { manager } = makeManager();
 
