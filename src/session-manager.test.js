@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
-import { disconnectStatusCode, mediaContentFromPayload, mediaInfoFromMessage, quotedMessageFromPayload, WhatsappSessionManager } from './session-manager.js';
+import { disconnectStatusCode, mediaContentFromPayload, mediaInfoFromMessage, messageKeyFromPayload, quotedMessageFromPayload, WhatsappSessionManager } from './session-manager.js';
 
 function makeManager() {
   const events = [];
@@ -164,6 +164,38 @@ test('ignores invalid quoted message payloads', () => {
   assert.equal(quotedMessageFromPayload(null), null);
   assert.equal(quotedMessageFromPayload({ key: { id: 'missing-message' } }), null);
   assert.equal(quotedMessageFromPayload({ message: { conversation: 'missing id' } }), null);
+});
+
+test('sends message reactions through whatsapp', async () => {
+  const { manager } = makeManager();
+
+  await manager.start(2);
+  const socket = manager.sessionFor(2).socket;
+  const key = {
+    id: 'IN-REACT-1',
+    remoteJid: '60123456789@s.whatsapp.net',
+    fromMe: false,
+  };
+
+  const response = await manager.sendReaction(2, '60123456789', '👍', key);
+
+  assert.equal(response.reactionMessageId, 'IN-REACT-1');
+  assert.equal(response.emoji, '👍');
+  assert.deepEqual(socket.sent[0], {
+    to: '60123456789@s.whatsapp.net',
+    message: {
+      react: {
+        text: '👍',
+        key,
+      },
+    },
+    options: undefined,
+  });
+});
+
+test('ignores invalid reaction message keys', () => {
+  assert.equal(messageKeyFromPayload(null), null);
+  assert.equal(messageKeyFromPayload({ remoteJid: '60123456789@s.whatsapp.net' }), null);
 });
 
 test('does not send stale ephemeral expiration after the chat disables disappearing messages', async () => {

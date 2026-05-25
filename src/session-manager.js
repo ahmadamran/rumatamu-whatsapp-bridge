@@ -168,6 +168,24 @@ export function quotedMessageFromPayload(value) {
   };
 }
 
+export function messageKeyFromPayload(value) {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const id = String(value.id || '').trim();
+
+  if (!id) {
+    return null;
+  }
+
+  return {
+    ...value,
+    id,
+    fromMe: Boolean(value.fromMe),
+  };
+}
+
 export function contextInfoFromMessage(message) {
   const content =
     message?.ephemeralMessage?.message ||
@@ -534,6 +552,37 @@ export class WhatsappSessionManager {
       mediaType: mediaContent ? String(media?.type || 'media') : null,
       ephemeralExpiration: ephemeralExpiration || null,
       quotedMessageId: quotedMessage?.key?.id || null,
+    };
+  }
+
+  async sendReaction(managementCompanyId, to, emoji, messageKey) {
+    const key = messageKeyFromPayload(messageKey);
+
+    if (!to || !emoji || !key) {
+      throw new Error('`to`, `emoji`, and `messageKey` are required.');
+    }
+
+    await this.start(managementCompanyId);
+    const session = this.sessionFor(managementCompanyId);
+    if (!session.socket) {
+      throw new Error('WhatsApp session is not connected.');
+    }
+
+    const jid = toWhatsappJid(to);
+    const result = await session.socket.sendMessage(jid, {
+      react: {
+        text: String(emoji),
+        key,
+      },
+    });
+
+    return {
+      ok: true,
+      managementCompanyId: session.managementCompanyId,
+      messageId: result?.key?.id || null,
+      to: jid,
+      reactionMessageId: key.id,
+      emoji: String(emoji),
     };
   }
 }

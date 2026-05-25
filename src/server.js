@@ -101,6 +101,20 @@ export function createApp({ manager } = {}) {
     }
   });
 
+  app.post('/sessions/:managementCompanyId/messages/react', async (request, response, next) => {
+    try {
+      const { to, emoji, messageKey } = request.body || {};
+      response.json(await sessionManager.sendReaction(request.managementCompanyId, to, emoji, messageKey));
+    } catch (error) {
+      if (error.message === '`to`, `emoji`, and `messageKey` are required.') {
+        response.status(422).json({ message: error.message });
+        return;
+      }
+
+      next(error);
+    }
+  });
+
   app.use((error, request, response, next) => {
     logger.error({ error, managementCompanyId: request.managementCompanyId }, 'Request failed');
     response.status(500).json({ message: error.message || 'Bridge request failed.' });
