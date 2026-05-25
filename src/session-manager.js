@@ -121,6 +121,20 @@ export function mediaContentFromPayload(media = {}) {
   return null;
 }
 
+export function disconnectStatusCode(error) {
+  if (!error) {
+    return null;
+  }
+
+  return error?.output?.statusCode || error?.statusCode || new Boom(error)?.output?.statusCode || null;
+}
+
+export function normalizeEphemeralExpiration(value) {
+  const expiration = Number(value || 0);
+
+  return Number.isSafeInteger(expiration) && expiration > 0 ? expiration : null;
+}
+
 export class WhatsappSessionManager {
   constructor({
     authRoot = '/data/auth',
@@ -155,6 +169,7 @@ export class WhatsappSessionManager {
         latestQr: null,
         latestQrDataUrl: null,
         startPromise: null,
+        ephemeralExpirations: new Map(),
       });
     }
 
@@ -212,9 +227,34 @@ export class WhatsappSessionManager {
     session.socket = socket;
     socket.ev.on('creds.update', saveCreds);
     socket.ev.on('connection.update', (update) => this.handleConnectionUpdate(session, update));
+    socket.ev.on('messaging-history.set', (payload) => this.handleChatSet(session, payload?.chats || []));
+    socket.ev.on('chats.upsert', (chats) => this.handleChatSet(session, chats || []));
+    socket.ev.on('chats.update', (updates) => this.handleChatSet(session, updates || []));
     socket.ev.on('messages.upsert', (payload) => this.handleMessages(session, payload));
 
     return socket;
+  }
+
+  handleChatSet(session, chats) {
+    for (const chat of chats || []) {
+      const jid = chat?.id;
+
+      if (!jid) {
+        continue;
+      }
+
+      if (!Object.prototype.hasOwnProperty.call(chat, 'ephemeralExpiration')) {
+        continue;
+      }
+
+      const expiration = normalizeEphemeralExpiration(chat.ephemeralExpiration);
+
+      if (expiration) {
+        session.ephemeralExpirations.set(jid, expiration);
+      } else {
+        session.ephemeralExpirations.delete(jid);
+      }
+    }
   }
 
   async handleConnectionUpdate(session, update) {
@@ -247,10 +287,25 @@ export class WhatsappSessionManager {
     }
 
     if (connection === 'close') {
-      const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
+      const statusCode = disconnectStatusCode(lastDisconnect?.error);
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       session.socket = null;
       session.startPromise = null;
+
+      if (!shouldReconnect) {
+        session.connectionState = 'disconnected';
+        session.latestQr = null;
+        session.latestQrDataUrl = null;
+        await rm(session.authDir, { recursive: true, force: true });
+
+        await this.emit('connection', session.managementCompanyId, {
+          state: 'disconnected',
+          loggedOut: true,
+          authPath: session.authDir,
+        });
+
+        return;
+      }
 
       if (shouldReconnect) {
         setTimeout(() => {
@@ -367,10 +422,9 @@ export class WhatsappSessionManager {
 
     const jid = toWhatsappJid(to);
     const mediaContent = mediaContentFromPayload(media);
-    const result = await session.socket.sendMessage(
-      jid,
-      mediaContent || { text: String(body) },
-    );
+    const ephemeralExpiration = session.ephemeralExpirations.get(jid);
+    const options = ephemeralExpiration ? { ephemeralExpiration } : undefined;
+    const result = await session.socket.sendMessage(jid, mediaContent || { text: String(body) }, options);
 
     return {
       ok: true,
@@ -378,6 +432,7 @@ export class WhatsappSessionManager {
       messageId: result?.key?.id || null,
       to: jid,
       mediaType: mediaContent ? String(media?.type || 'media') : null,
+      ephemeralExpiration: ephemeralExpiration || null,
     };
   }
 }
