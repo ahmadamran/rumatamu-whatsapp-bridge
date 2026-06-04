@@ -272,6 +272,22 @@ export function isImportableWhatsappMessage(item, now = Math.floor(Date.now() / 
   return bodyFromMessage(item.message).trim() !== '' || Boolean(mediaInfoFromMessage(item.message));
 }
 
+export function isLiveWhatsappMessage(item) {
+  if (!item?.message || !item?.key?.id || !item?.key?.remoteJid) {
+    return false;
+  }
+
+  if (item.key.remoteJid === STATUS_BROADCAST_JID) {
+    return false;
+  }
+
+  if (INTERNAL_MESSAGE_TYPES.has(typeFromMessage(item.message))) {
+    return false;
+  }
+
+  return bodyFromMessage(item.message).trim() !== '' || Boolean(mediaInfoFromMessage(item.message));
+}
+
 export class WhatsappSessionManager {
   constructor({
     authRoot = '/data/auth',
@@ -603,7 +619,7 @@ export class WhatsappSessionManager {
 
   async handleMessages(session, { messages }) {
     for (const item of messages || []) {
-      if (!item.message || item.key.fromMe) {
+      if (!isLiveWhatsappMessage(item)) {
         continue;
       }
 

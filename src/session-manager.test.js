@@ -532,6 +532,32 @@ test('message events include phone jid when whatsapp sends a lid remote jid', as
   assert.equal(events[0].payload.phone, '60136102545');
 });
 
+test('live whatsapp client messages are emitted as outbound fromMe messages', async () => {
+  const { manager, events } = makeManager();
+
+  await manager.start(2);
+  await manager.sessionFor(2).socket.ev.emit('messages.upsert', {
+    messages: [
+      {
+        key: {
+          id: 'client-outbound-1',
+          remoteJid: '60123456789@s.whatsapp.net',
+          fromMe: true,
+        },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+        message: { conversation: 'Sent from WhatsApp client' },
+      },
+    ],
+  });
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].event, 'message');
+  assert.equal(events[0].payload.messageId, 'client-outbound-1');
+  assert.equal(events[0].payload.remoteJid, '60123456789@s.whatsapp.net');
+  assert.equal(events[0].payload.fromMe, true);
+  assert.equal(events[0].payload.body, 'Sent from WhatsApp client');
+});
+
 test('media payloads are converted into baileys image content', () => {
   const content = mediaContentFromPayload({
     type: 'image',
