@@ -193,6 +193,20 @@ export function messageKeyFromPayload(value) {
   };
 }
 
+export function historyMessageKeyFromPayload(value) {
+  const key = messageKeyFromPayload(value);
+  const remoteJid = String(key?.remoteJid || '').trim();
+
+  if (!key || !remoteJid) {
+    return null;
+  }
+
+  return {
+    ...key,
+    remoteJid,
+  };
+}
+
 export function contextInfoFromMessage(message) {
   const content =
     message?.ephemeralMessage?.message ||
@@ -779,6 +793,45 @@ export class WhatsappSessionManager {
       to: jid,
       reactionMessageId: key.id,
       emoji: String(emoji),
+    };
+  }
+
+  async fetchRecentHistory(managementCompanyId, messageKey, timestamp, count = 50) {
+    const key = historyMessageKeyFromPayload(messageKey);
+    const messageTimestamp = Number(timestamp || 0);
+    const messageCount = Math.max(1, Math.min(50, Number(count || 50)));
+
+    if (!key || !Number.isFinite(messageTimestamp) || messageTimestamp <= 0) {
+      throw new Error('`messageKey` with `remoteJid` and `timestamp` are required.');
+    }
+
+    await this.start(managementCompanyId);
+    const session = this.sessionFor(managementCompanyId);
+    if (!session.socket) {
+      throw new Error('WhatsApp session is not connected.');
+    }
+
+    if (typeof session.socket.fetchMessageHistory !== 'function') {
+      throw new Error('WhatsApp history sync is not supported by this bridge session.');
+    }
+
+    const requestId = await session.socket.fetchMessageHistory(messageCount, key, messageTimestamp);
+    this.logger?.info?.({
+      managementCompanyId: session.managementCompanyId,
+      remoteJid: key.remoteJid,
+      messageId: key.id,
+      timestamp: messageTimestamp,
+      count: messageCount,
+      requestId,
+    }, 'WhatsApp on-demand history sync requested');
+
+    return {
+      ok: true,
+      managementCompanyId: session.managementCompanyId,
+      requestId,
+      count: messageCount,
+      remoteJid: key.remoteJid,
+      messageId: key.id,
     };
   }
 }

@@ -27,10 +27,15 @@ function makeManager() {
         ev: new EventEmitter(),
         user: { id: `user-${sockets.size + 1}` },
         sent: [],
+        historyRequests: [],
         endCalled: false,
         async sendMessage(to, message, options) {
           this.sent.push({ to, message, options });
           return { key: { id: `message-${this.sent.length}` } };
+        },
+        async fetchMessageHistory(count, messageKey, timestamp) {
+          this.historyRequests.push({ count, messageKey, timestamp });
+          return `history-${this.historyRequests.length}`;
         },
         end() {
           this.endCalled = true;
@@ -556,6 +561,44 @@ test('live whatsapp client messages are emitted as outbound fromMe messages', as
   assert.equal(events[0].payload.remoteJid, '60123456789@s.whatsapp.net');
   assert.equal(events[0].payload.fromMe, true);
   assert.equal(events[0].payload.body, 'Sent from WhatsApp client');
+});
+
+test('requests on-demand whatsapp history before a known message', async () => {
+  const { manager } = makeManager();
+
+  await manager.start(2);
+  const socket = manager.sessionFor(2).socket;
+  const response = await manager.fetchRecentHistory(2, {
+    id: 'known-message-1',
+    remoteJid: '60123456789@s.whatsapp.net',
+    fromMe: true,
+  }, 1780584934, 100);
+
+  assert.equal(response.ok, true);
+  assert.equal(response.requestId, 'history-1');
+  assert.equal(response.count, 50);
+  assert.deepEqual(socket.historyRequests[0], {
+    count: 50,
+    messageKey: {
+      id: 'known-message-1',
+      remoteJid: '60123456789@s.whatsapp.net',
+      fromMe: true,
+    },
+    timestamp: 1780584934,
+  });
+});
+
+test('rejects on-demand history without a remote jid and timestamp', async () => {
+  const { manager } = makeManager();
+
+  await assert.rejects(
+    () => manager.fetchRecentHistory(2, { id: 'known-message-1' }, 1780584934),
+    /`messageKey` with `remoteJid` and `timestamp` are required\./,
+  );
+  await assert.rejects(
+    () => manager.fetchRecentHistory(2, { id: 'known-message-1', remoteJid: '60123456789@s.whatsapp.net' }, 0),
+    /`messageKey` with `remoteJid` and `timestamp` are required\./,
+  );
 });
 
 test('media payloads are converted into baileys image content', () => {
