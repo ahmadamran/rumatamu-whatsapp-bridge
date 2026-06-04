@@ -350,7 +350,15 @@ export class WhatsappSessionManager {
   messageForRetry(session, key) {
     const cacheKey = messageStoreKey(key);
 
-    return cacheKey ? session.messages.get(cacheKey) : undefined;
+    const message = cacheKey ? session.messages.get(cacheKey) : undefined;
+    this.logger?.debug?.({
+      managementCompanyId: session.managementCompanyId,
+      remoteJid: key?.remoteJid || key?.chat || null,
+      messageId: key?.id || null,
+      found: Boolean(message),
+    }, 'WhatsApp retry message lookup');
+
+    return message;
   }
 
   handleChatSet(session, chats) {
@@ -585,6 +593,14 @@ export class WhatsappSessionManager {
     const messageContent = mediaContent || { text: String(body) };
     const result = await session.socket.sendMessage(jid, messageContent, options);
     this.cacheMessage(session, { remoteJid: jid, ...(result?.key || {}) }, messageContent);
+    this.logger?.info?.({
+      managementCompanyId: session.managementCompanyId,
+      to: jid,
+      messageId: result?.key?.id || null,
+      mediaType: mediaContent ? String(media?.type || 'media') : null,
+      ephemeralExpiration: ephemeralExpiration || null,
+      hasQuotedMessage: Boolean(quotedMessage),
+    }, 'WhatsApp message sent');
 
     return {
       ok: true,
@@ -619,6 +635,12 @@ export class WhatsappSessionManager {
     };
     const result = await session.socket.sendMessage(jid, messageContent);
     this.cacheMessage(session, { remoteJid: jid, ...(result?.key || {}) }, messageContent);
+    this.logger?.info?.({
+      managementCompanyId: session.managementCompanyId,
+      to: jid,
+      messageId: result?.key?.id || null,
+      reactionMessageId: key.id,
+    }, 'WhatsApp reaction sent');
 
     return {
       ok: true,
