@@ -10,6 +10,12 @@ import makeWASocket, {
 import QRCode from 'qrcode';
 import { Boom } from '@hapi/boom';
 
+const HISTORY_SYNC_SOURCE = 'history_sync';
+const HISTORY_SYNC_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
+const HISTORY_SYNC_MAX_MESSAGES = 500;
+const STATUS_BROADCAST_JID = 'status@broadcast';
+const INTERNAL_MESSAGE_TYPES = new Set(['messageContextInfo', 'senderKeyDistribution']);
+
 export function bodyFromMessage(message) {
   return (
     message?.conversation ||
@@ -222,6 +228,50 @@ export function messageStoreKey(key = {}) {
   return remoteJid && id ? `${remoteJid}:${id}` : '';
 }
 
+export function timestampFromMessage(item, fallback = Math.floor(Date.now() / 1000)) {
+  const value = item?.messageTimestamp;
+
+  if (typeof value === 'number') {
+    return value;
+  }
+
+  if (typeof value === 'bigint') {
+    return Number(value);
+  }
+
+  if (value && typeof value.toNumber === 'function') {
+    return value.toNumber();
+  }
+
+  const numeric = Number(value);
+
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
+}
+
+export function isImportableWhatsappMessage(item, now = Math.floor(Date.now() / 1000)) {
+  if (!item?.message || !item?.key?.id || !item?.key?.remoteJid) {
+    return false;
+  }
+
+  if (item.key.remoteJid === STATUS_BROADCAST_JID) {
+    return false;
+  }
+
+  const type = typeFromMessage(item.message);
+
+  if (INTERNAL_MESSAGE_TYPES.has(type)) {
+    return false;
+  }
+
+  const timestamp = timestampFromMessage(item, now);
+
+  if (timestamp < now - HISTORY_SYNC_MAX_AGE_SECONDS) {
+    return false;
+  }
+
+  return bodyFromMessage(item.message).trim() !== '' || Boolean(mediaInfoFromMessage(item.message));
+}
+
 export class WhatsappSessionManager {
   constructor({
     authRoot = '/data/auth',
@@ -324,7 +374,11 @@ export class WhatsappSessionManager {
     session.socket = socket;
     socket.ev.on('creds.update', saveCreds);
     socket.ev.on('connection.update', (update) => this.handleConnectionUpdate(session, update));
-    socket.ev.on('messaging-history.set', (payload) => this.handleChatSet(session, payload?.chats || []));
+    socket.ev.on('messaging-history.set', (payload) => {
+      this.handleHistorySet(session, payload).catch((error) => {
+        this.logger?.warn?.({ error, managementCompanyId: session.managementCompanyId }, 'Unable to process WhatsApp history sync');
+      });
+    });
     socket.ev.on('chats.upsert', (chats) => this.handleChatSet(session, chats || []));
     socket.ev.on('chats.update', (updates) => this.handleChatSet(session, updates || []));
     socket.ev.on('messages.upsert', (payload) => this.handleMessages(session, payload));
@@ -375,6 +429,60 @@ export class WhatsappSessionManager {
 
       this.cacheEphemeralExpiration(session, [jid], chat.ephemeralExpiration);
     }
+  }
+
+  async handleHistorySet(session, payload = {}) {
+    this.handleChatSet(session, payload?.chats || []);
+    await this.handleHistoryMessages(session, payload);
+  }
+
+  async handleHistoryMessages(session, payload = {}) {
+    const now = Math.floor(Date.now() / 1000);
+    const messages = payload?.messages || [];
+    const stats = {
+      received: messages.length,
+      skippedInvalid: 0,
+      skippedOld: 0,
+      emitted: 0,
+    };
+    const eligible = [];
+
+    for (const item of messages) {
+      const timestamp = timestampFromMessage(item, now);
+
+      if (timestamp < now - HISTORY_SYNC_MAX_AGE_SECONDS) {
+        stats.skippedOld += 1;
+        continue;
+      }
+
+      if (!isImportableWhatsappMessage(item, now)) {
+        stats.skippedInvalid += 1;
+        continue;
+      }
+
+      eligible.push({ item, timestamp });
+    }
+
+    const capped = eligible
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .slice(0, HISTORY_SYNC_MAX_MESSAGES)
+      .sort((a, b) => a.timestamp - b.timestamp);
+
+    for (const { item, timestamp } of capped) {
+      await this.emitMessage(session, item, {
+        source: HISTORY_SYNC_SOURCE,
+        historySync: true,
+        syncType: payload?.syncType ?? null,
+        timestamp,
+      });
+      stats.emitted += 1;
+    }
+
+    this.logger?.info?.({
+      managementCompanyId: session.managementCompanyId,
+      syncType: payload?.syncType ?? null,
+      ...stats,
+    }, 'WhatsApp history sync processed');
   }
 
   cacheEphemeralExpiration(session, jids, value) {
@@ -499,33 +607,39 @@ export class WhatsappSessionManager {
         continue;
       }
 
-      const remoteJid = item.key.remoteJid;
-      const phoneJid = phoneJidFromMessage(item);
-      const expiration = ephemeralExpirationFromMessage(item.message);
-
-      if (expiration !== undefined) {
-        this.cacheEphemeralExpiration(session, [remoteJid, phoneJid], expiration);
-      } else {
-        this.syncEphemeralAliases(session, [remoteJid, phoneJid]);
-      }
-
-      const type = typeFromMessage(item.message);
-      const media = await this.mediaPayloadForMessage(item);
-      this.cacheMessage(session, item.key, item.message);
-
-      await this.emit('message', session.managementCompanyId, {
-        messageId: item.key.id,
-        remoteJid,
-        phoneJid,
-        phone: phoneFromJid(phoneJid),
-        pushName: item.pushName,
-        timestamp: Number(item.messageTimestamp || Math.floor(Date.now() / 1000)),
-        type,
-        body: bodyFromMessage(item.message),
-        media,
-        payload: item,
-      });
+      await this.emitMessage(session, item);
     }
+  }
+
+  async emitMessage(session, item, overrides = {}) {
+    const remoteJid = item.key.remoteJid;
+    const phoneJid = phoneJidFromMessage(item);
+    const expiration = ephemeralExpirationFromMessage(item.message);
+
+    if (expiration !== undefined) {
+      this.cacheEphemeralExpiration(session, [remoteJid, phoneJid], expiration);
+    } else {
+      this.syncEphemeralAliases(session, [remoteJid, phoneJid]);
+    }
+
+    const type = typeFromMessage(item.message);
+    const media = await this.mediaPayloadForMessage(item);
+    this.cacheMessage(session, item.key, item.message);
+
+    await this.emit('message', session.managementCompanyId, {
+      messageId: item.key.id,
+      remoteJid,
+      phoneJid,
+      phone: phoneFromJid(phoneJid),
+      pushName: item.pushName,
+      fromMe: Boolean(item.key.fromMe),
+      timestamp: timestampFromMessage(item),
+      type,
+      body: bodyFromMessage(item.message),
+      media,
+      payload: item,
+      ...overrides,
+    });
   }
 
   async stop(managementCompanyId) {

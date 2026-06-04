@@ -46,6 +46,10 @@ function makeManager() {
   return { manager, events, sockets };
 }
 
+async function flushAsyncEvents() {
+  await new Promise((resolve) => setTimeout(resolve, 20));
+}
+
 test('keeps separate session state for separate management companies', async () => {
   const { manager } = makeManager();
 
@@ -165,6 +169,130 @@ test('uses ephemeral expiration from messaging history before sending', async ()
   await manager.sendMessage(2, '60199990000', 'History timer');
 
   assert.deepEqual(socket.sent[0].options, { ephemeralExpiration: 604800 });
+});
+
+test('emits recent messages from whatsapp history sync quietly tagged for import', async () => {
+  const { manager, events } = makeManager();
+
+  await manager.start(2);
+  const socket = manager.sessionFor(2).socket;
+  await socket.ev.emit('messaging-history.set', {
+    syncType: 3,
+    messages: [
+      {
+        key: {
+          id: 'history-inbound-1',
+          remoteJid: '60123456789@s.whatsapp.net',
+          fromMe: false,
+        },
+        pushName: 'Aina',
+        messageTimestamp: Math.floor(Date.now() / 1000) - 60,
+        message: {
+          conversation: 'Missed message',
+        },
+      },
+    ],
+  });
+  await flushAsyncEvents();
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].event, 'message');
+  assert.equal(events[0].payload.messageId, 'history-inbound-1');
+  assert.equal(events[0].payload.source, 'history_sync');
+  assert.equal(events[0].payload.historySync, true);
+  assert.equal(events[0].payload.syncType, 3);
+  assert.equal(events[0].payload.body, 'Missed message');
+});
+
+test('history sync skips old empty status and internal messages', async () => {
+  const { manager, events } = makeManager();
+
+  await manager.start(2);
+  const socket = manager.sessionFor(2).socket;
+  const recent = Math.floor(Date.now() / 1000) - 60;
+  await socket.ev.emit('messaging-history.set', {
+    messages: [
+      {
+        key: { id: 'history-old', remoteJid: '60111111111@s.whatsapp.net', fromMe: false },
+        messageTimestamp: recent - (8 * 24 * 60 * 60),
+        message: { conversation: 'Too old' },
+      },
+      {
+        key: { id: 'history-empty', remoteJid: '60122222222@s.whatsapp.net', fromMe: false },
+        messageTimestamp: recent,
+        message: { conversation: '' },
+      },
+      {
+        key: { id: 'history-status', remoteJid: 'status@broadcast', fromMe: false },
+        messageTimestamp: recent,
+        message: { conversation: 'Story update' },
+      },
+      {
+        key: { id: 'history-internal', remoteJid: '60133333333@s.whatsapp.net', fromMe: false },
+        messageTimestamp: recent,
+        message: { messageContextInfo: {} },
+      },
+    ],
+  });
+  await flushAsyncEvents();
+
+  assert.equal(events.length, 0);
+});
+
+test('history sync caps import to the newest 500 messages and emits oldest first', async () => {
+  const { manager, events } = makeManager();
+
+  await manager.start(2);
+  const socket = manager.sessionFor(2).socket;
+  const base = Math.floor(Date.now() / 1000) - 1000;
+  const messages = Array.from({ length: 505 }, (_, index) => ({
+    key: {
+      id: `history-cap-${index + 1}`,
+      remoteJid: '60123456789@s.whatsapp.net',
+      fromMe: false,
+    },
+    messageTimestamp: base + index,
+    message: {
+      conversation: `Message ${index + 1}`,
+    },
+  }));
+
+  await socket.ev.emit('messaging-history.set', { messages });
+  await flushAsyncEvents();
+
+  assert.equal(events.length, 500);
+  assert.equal(events[0].payload.messageId, 'history-cap-6');
+  assert.equal(events[499].payload.messageId, 'history-cap-505');
+});
+
+test('history sync caches messages for whatsapp retry lookup', async () => {
+  const { manager } = makeManager();
+
+  await manager.start(2);
+  const socket = manager.sessionFor(2).socket;
+  await socket.ev.emit('messaging-history.set', {
+    messages: [
+      {
+        key: {
+          id: 'history-cache-1',
+          remoteJid: '60123456789@s.whatsapp.net',
+          fromMe: false,
+        },
+        messageTimestamp: Math.floor(Date.now() / 1000) - 60,
+        message: {
+          conversation: 'Cache me',
+        },
+      },
+    ],
+  });
+  await flushAsyncEvents();
+
+  const message = await socket.config.getMessage({
+    remoteJid: '60123456789@s.whatsapp.net',
+    id: 'history-cache-1',
+  });
+
+  assert.deepEqual(message, { conversation: 'Cache me' });
 });
 
 test('uses explicit ephemeral expiration from send request before cached chat state', async () => {
