@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
-import { disconnectStatusCode, mediaContentFromPayload, mediaInfoFromMessage, messageKeyFromPayload, quotedMessageFromPayload, WhatsappSessionManager } from './session-manager.js';
+import { disconnectStatusCode, mediaContentFromPayload, mediaInfoFromMessage, messageKeyFromPayload, messageStoreKey, quotedMessageFromPayload, WhatsappSessionManager } from './session-manager.js';
 
 function makeManager() {
   const events = [];
@@ -23,6 +23,7 @@ function makeManager() {
     qrToDataUrl: async (qr) => `data:image/png;base64,${qr}`,
     makeSocket: (config) => {
       const socket = {
+        config,
         ev: new EventEmitter(),
         user: { id: `user-${sockets.size + 1}` },
         sent: [],
@@ -72,6 +73,56 @@ test('sends through the requested management company socket only', async () => {
   assert.equal(companyTwoSocket.sent.length, 1);
   assert.equal(companyTwoSocket.sent[0].to, '60123456789@s.whatsapp.net');
   assert.equal(companyTwoSocket.sent[0].options, undefined);
+});
+
+test('provides cached outbound messages for WhatsApp retry requests', async () => {
+  const { manager } = makeManager();
+
+  await manager.start(2);
+  const socket = manager.sessionFor(2).socket;
+  await manager.sendMessage(2, '60123456789', 'Retry me');
+
+  const message = await socket.config.getMessage({
+    remoteJid: '60123456789@s.whatsapp.net',
+    id: 'message-1',
+  });
+
+  assert.deepEqual(message, { text: 'Retry me' });
+});
+
+test('provides cached inbound messages for quote and retry lookups', async () => {
+  const { manager } = makeManager();
+
+  await manager.start(2);
+  const socket = manager.sessionFor(2).socket;
+  await socket.ev.emit('messages.upsert', {
+    messages: [
+      {
+        key: {
+          id: 'inbound-1',
+          remoteJid: '60123456789@s.whatsapp.net',
+          fromMe: false,
+        },
+        messageTimestamp: 1779634752,
+        message: {
+          conversation: 'Original inbound',
+        },
+      },
+    ],
+  });
+
+  const message = await socket.config.getMessage({
+    remoteJid: '60123456789@s.whatsapp.net',
+    id: 'inbound-1',
+  });
+
+  assert.deepEqual(message, { conversation: 'Original inbound' });
+});
+
+test('builds stable message store keys only when jid and id are present', () => {
+  assert.equal(messageStoreKey({ remoteJid: '60123456789@s.whatsapp.net', id: 'abc' }), '60123456789@s.whatsapp.net:abc');
+  assert.equal(messageStoreKey({ remoteJid: '60123456789@s.whatsapp.net' }), '');
+  assert.equal(messageStoreKey({ id: 'abc' }), '');
 });
 
 test('sends with the chat ephemeral expiration when disappearing messages are enabled', async () => {

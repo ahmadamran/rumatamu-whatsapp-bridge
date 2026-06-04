@@ -4,6 +4,7 @@ import makeWASocket, {
   DisconnectReason,
   downloadMediaMessage,
   fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore,
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
@@ -214,6 +215,13 @@ export function ephemeralExpirationFromMessage(message) {
   return normalizeEphemeralExpiration(contextInfo.expiration);
 }
 
+export function messageStoreKey(key = {}) {
+  const remoteJid = String(key.remoteJid || key.chat || '');
+  const id = String(key.id || '');
+
+  return remoteJid && id ? `${remoteJid}:${id}` : '';
+}
+
 export class WhatsappSessionManager {
   constructor({
     authRoot = '/data/auth',
@@ -224,6 +232,7 @@ export class WhatsappSessionManager {
     latestVersion = fetchLatestBaileysVersion,
     qrToDataUrl = QRCode.toDataURL,
     reconnectDelay = 2500,
+    messageStoreLimit = 500,
   }) {
     this.authRoot = authRoot;
     this.emit = emit;
@@ -233,6 +242,7 @@ export class WhatsappSessionManager {
     this.latestVersion = latestVersion;
     this.qrToDataUrl = qrToDataUrl;
     this.reconnectDelay = reconnectDelay;
+    this.messageStoreLimit = messageStoreLimit;
     this.sessions = new Map();
   }
 
@@ -249,6 +259,7 @@ export class WhatsappSessionManager {
         latestQrDataUrl: null,
         startPromise: null,
         ephemeralExpirations: new Map(),
+        messages: new Map(),
       });
     }
 
@@ -295,10 +306,17 @@ export class WhatsappSessionManager {
   async createSocket(session) {
     const { state, saveCreds } = await this.authState(session.authDir);
     const { version } = await this.latestVersion();
+    const logger = this.logger?.child
+      ? this.logger.child({ module: 'baileys', managementCompanyId: session.managementCompanyId })
+      : this.logger;
     const socket = this.makeSocket({
-      auth: state,
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, logger),
+      },
       browser: ['RumaTamu', 'Chrome', '1.0.0'],
-      logger: this.logger?.child ? this.logger.child({ module: 'baileys', managementCompanyId: session.managementCompanyId }) : this.logger,
+      getMessage: async (key) => this.messageForRetry(session, key),
+      logger,
       printQRInTerminal: false,
       version,
     });
@@ -312,6 +330,27 @@ export class WhatsappSessionManager {
     socket.ev.on('messages.upsert', (payload) => this.handleMessages(session, payload));
 
     return socket;
+  }
+
+  cacheMessage(session, key, message) {
+    const cacheKey = messageStoreKey(key);
+
+    if (!cacheKey || !message) {
+      return;
+    }
+
+    session.messages.set(cacheKey, message);
+
+    while (session.messages.size > this.messageStoreLimit) {
+      const oldestKey = session.messages.keys().next().value;
+      session.messages.delete(oldestKey);
+    }
+  }
+
+  messageForRetry(session, key) {
+    const cacheKey = messageStoreKey(key);
+
+    return cacheKey ? session.messages.get(cacheKey) : undefined;
   }
 
   handleChatSet(session, chats) {
@@ -464,6 +503,7 @@ export class WhatsappSessionManager {
 
       const type = typeFromMessage(item.message);
       const media = await this.mediaPayloadForMessage(item);
+      this.cacheMessage(session, item.key, item.message);
 
       await this.emit('message', session.managementCompanyId, {
         messageId: item.key.id,
@@ -542,7 +582,9 @@ export class WhatsappSessionManager {
       ...(quotedMessage ? { quoted: quotedMessage } : {}),
     };
     const options = Object.keys(optionsPayload).length ? optionsPayload : undefined;
-    const result = await session.socket.sendMessage(jid, mediaContent || { text: String(body) }, options);
+    const messageContent = mediaContent || { text: String(body) };
+    const result = await session.socket.sendMessage(jid, messageContent, options);
+    this.cacheMessage(session, { remoteJid: jid, ...(result?.key || {}) }, messageContent);
 
     return {
       ok: true,
@@ -569,12 +611,14 @@ export class WhatsappSessionManager {
     }
 
     const jid = toWhatsappJid(to);
-    const result = await session.socket.sendMessage(jid, {
+    const messageContent = {
       react: {
         text: String(emoji),
         key,
       },
-    });
+    };
+    const result = await session.socket.sendMessage(jid, messageContent);
+    this.cacheMessage(session, { remoteJid: jid, ...(result?.key || {}) }, messageContent);
 
     return {
       ok: true,
